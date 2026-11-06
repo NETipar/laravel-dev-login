@@ -29,6 +29,8 @@ A sign-in URL for browser testing: `GET /dev/login/{user}` signs the browser in 
 - [Hooks](#hooks)
 - [Redirect](#redirect)
 - [Guard and user lookup](#guard-and-user-lookup)
+- [Multiple guards and hosts](#multiple-guards-and-hosts)
+- [Multi-tenant apps](#multi-tenant-apps)
 - [Security notes](#security-notes)
 - [Deployment notes](#deployment-notes)
 - [Artisan](#artisan)
@@ -172,8 +174,10 @@ There is no package interface to implement on purpose: an `implements` would fai
 
 Two events let your application write its own audit trail:
 
-- `NETipar\DevLogin\Events\DevLoginSucceeded(Authenticatable $user, string $guard)`: fired after Laravel's `Login` event, in the same request.
-- `NETipar\DevLogin\Events\DevLoginRefused(Authenticatable $user, string $guard, ?string $message)`
+- `NETipar\DevLogin\Events\DevLoginSucceeded(Authenticatable $user, string $guard, string $login)`: fired after Laravel's `Login` event, in the same request.
+- `NETipar\DevLogin\Events\DevLoginRefused(Authenticatable $user, string $guard, ?string $message, string $login)`
+
+`$login` is the name of the login that was used (`default`, or a key of `logins`).
 
 The request is not part of the events, because a queued listener could not serialize it; a synchronous listener reads it from `request()`.
 
@@ -235,6 +239,80 @@ With a non-default `guard`, dropping the old session also signs the visitor out 
 'user_key' => 'email', // then /dev/login/agent@demo.test works
 ```
 
+## Multiple guards and hosts
+
+The top-level keys are the `default` login. `logins` adds more, each with its own route. For example, company users sign in on their tenant subdomain with the `web` guard, and staff on a separate admin host with the `staff` guard:
+
+```php
+// config/dev-login.php
+'guard' => 'web',
+'domain' => '{tenant}.example.test',
+
+'logins' => [
+    'staff' => [
+        'guard' => 'staff',
+        'domain' => 'admin.example.test',
+        'authorize' => App\Dev\StaffOnly::class,
+    ],
+],
+```
+
+That gives two routes:
+
+- `dev.login` on `acme.example.test/dev/login/{user}`;
+- `dev.login.staff` on `admin.example.test/dev/login/{user}`.
+
+How the logins relate:
+
+- **No inheritance.** A login in `logins` does not inherit the top-level values. A key it leaves out gets the package default: path `dev/login/{user}`, route name `dev.login.<name>`, middleware `web` + `throttle:60,1`, the default guard, `user_key` `id`, no `authorize` hook, `?to=` on. The `authorize` hook, the middleware and the user key usually differ per guard, and a value inherited without anyone noticing could let the wrong people in.
+- **`default` is taken.** A `logins.default` entry is a configuration error.
+- **Shared gate.** `enabled`, `block_in_production`, `reject_cross_site` and `allowed_ips` at the top level apply to every login. A login can only narrow them:
+  - `'enabled' => false` removes its route;
+  - `'reject_cross_site' => true` and `'block_in_production' => true` add the protection when the top level has it off;
+  - its own `allowed_ips` must let the request through as well.
+
+**Registration order.** Logins with a domain are registered before the ones without, so two logins can share a path. On Laravel 12 a login without a domain would otherwise answer on every host, including `admin.example.test`; Laravel 13 matches domain routes first anyway. Two logins on the same domain and path, or with the same route name, are a configuration error.
+
+## Multi-tenant apps
+
+The guard and its user provider are looked up while the request runs, after the login's middleware. The middleware that picks the tenant (switches the database connection, the session store, and calls `app('auth')->forgetGuards()`) must therefore run before the user lookup. Global middleware always does. Route middleware runs in the order of the login's `middleware` list:
+
+```php
+'middleware' => ['web', App\Http\Middleware\IdentifyTenant::class, 'throttle:60,1'],
+```
+
+The session is taken from the request, so a session store swapped by the tenant middleware is the one that gets invalidated and regenerated.
+
+`dev-login:url` has no request to pick the tenant from. `--tenant` runs the login's `tenant` hook instead: an invokable class in your app that switches to the tenant and returns its base URL. The user is looked up after it, in that tenant. With [spatie/laravel-multitenancy](https://github.com/spatie/laravel-multitenancy):
+
+```php
+namespace App\Dev;
+
+use App\Models\Tenant;
+
+final class ActivateTenant
+{
+    public function __invoke(string $tenant): string
+    {
+        $current = Tenant::where('domain', "{$tenant}.example.test")->firstOrFail()->makeCurrent();
+
+        return 'https://'.$current->domain;
+    }
+}
+```
+
+```php
+// config/dev-login.php
+'tenant' => App\Dev\ActivateTenant::class,
+```
+
+```bash
+php artisan dev-login:url 12 --tenant=acme
+# https://acme.example.test/dev/login/12
+```
+
+The hook is a plain class, like `authorize`: no package interface, so the config still loads without the package.
+
 ## Security notes
 
 - **Full bypass, by design.** The package skips 2FA, passkeys and passwords. The `verified` middleware (e-mail verification) and every other route middleware still apply after the sign-in.
@@ -253,27 +331,39 @@ With a non-default `guard`, dropping the old session also signs the visitor out 
 - **Build the config cache and the route cache on the target server**, never on your development machine, and never while `DEV_LOGIN_ENABLED=true`.
 - **`composer install --no-dev` regenerates the package manifest** (`bootstrap/cache/packages.php`, via `package:discover`). If a deploy copies a `bootstrap/cache` directory that was built on a development machine, the manifest still lists the package's service provider, which then points at a class that is not installed. **Never ship a dev-built `bootstrap/cache`.**
 - The published `config/dev-login.php` is safe without the package (it contains only `env()` calls and strings), so it can stay in the repository and be deployed with `--no-dev`.
+- After upgrading the package, rebuild a local route cache (`php artisan route:cache` or `route:clear`): a route cached by an older version gives a `404`.
 - Keep `DEV_LOGIN_ENABLED` at `false` or absent in `.env.example`, `phpunit.xml` and on every server. Only your own local `.env` turns it on.
 
 ## Artisan
 
 ```bash
-php artisan dev-login:url {user} {--to=}
+php artisan dev-login:url {user} {--login=default} {--host=} {--tenant=} {--to=}
 ```
 
 Prints a dev login URL; it does not sign anyone in.
 
-- If the `{user}` argument contains `@`, the user is looked up by e-mail; otherwise by the configured `user_key`.
-- The URL is built from `APP_URL` and contains the user's value for `user_key`.
+- If the `{user}` argument contains `@`, the user is looked up by e-mail; otherwise by the login's `user_key`.
+- `--login=` picks the login (default: `default`). The user is looked up on that login's guard.
+- The host of the URL:
+  - without a domain on the login, it comes from `APP_URL`;
+  - with a fixed domain (`admin.example.test`), it is that domain with the scheme of `APP_URL`;
+  - a domain with parameters (`{tenant}.example.test`) needs `--host` or `--tenant`.
+- `--host=acme.example.test` puts that host in the URL, with the scheme of `APP_URL`.
+- `--tenant=acme` runs the login's `tenant` hook (see [Multi-tenant apps](#multi-tenant-apps)). Without a hook it is an error. `--tenant` and `--host` cannot be used together.
 - `--to=` adds the one-off redirect target.
-- The user is looked up on the guard the route signs in on (`dev-login.guard`).
-- If the gate is closed or blocked, the command stops with a clear error and exit code `1`.
+- If the gate is closed or blocked, the login is closed, or the login does not exist, the command stops with a clear error and exit code `1`.
 
 ```bash
 php artisan about
 ```
 
-Shows a **Dev Login** section with: `Enabled`, `Blocked (production)`, `Route`, `Guard` and `Allowed IPs`.
+Shows a **Dev Login** section with: `Enabled`, `Blocked (production)`, `Route`, `Guard` and `Allowed IPs`. With `logins`, each extra login adds a row:
+
+```
+Login (staff) .... open | guard staff | admin.example.test | /dev/login/{user}
+```
+
+The state is `open`, `closed` or `blocked (production)`.
 
 ## Why not an existing package?
 
@@ -348,6 +438,29 @@ return [
 
     // Query parameter for a one-off target (?to=/servers/12); only same-host relative paths. null = off.
     'redirect_parameter' => 'to',
+
+    // Multi-tenant apps: the invokable class that dev-login:url --tenant=<value> runs.
+    // __invoke(string $tenant): string — it switches to that tenant and returns its base URL
+    // (scheme + host, e.g. https://acme.example.test). null = --tenant is not available.
+    'tenant' => null,
+
+    // More logins by name, each with its own route (dev.login.<name>); "default" is the one above.
+    // A login does not inherit the keys above: what it leaves out gets the package default.
+    // enabled, block_in_production, reject_cross_site and allowed_ips stay global; a login can only narrow them.
+    // See "Multiple guards and hosts" and "Multi-tenant apps" in the README.
+    //
+    // 'logins' => [
+    //     'tenant' => [
+    //         'domain' => '{tenant}.example.test',
+    //         'tenant' => App\Tenancy\ActivateTenant::class,
+    //     ],
+    //     'admin' => [
+    //         'domain' => 'admin.example.test',
+    //         'guard' => 'admin',
+    //         'user_key' => 'email',
+    //     ],
+    // ],
+    'logins' => [],
 ];
 ```
 

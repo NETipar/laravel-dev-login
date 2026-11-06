@@ -4,8 +4,8 @@ description: >
   Sign a browser in as any user of a Laravel application with the
   netipar/laravel-dev-login package, for manual, agent and browser testing
   (agent-browser, Playwright): the switch-gated GET dev login URL, the
-  dev-login:url command, the authorize hook, the audit events and the
-  dev_login Context marker.
+  dev-login:url command, several logins (guards, hosts, tenants), the
+  authorize and tenant hooks, the audit events and the dev_login Context marker.
 license: MIT
 metadata:
   author: NETipar
@@ -55,11 +55,26 @@ browser in (dropping any previous session), then redirects to `?to=` (a same-hos
 relative path only), else the `redirect` config, else `fortify.home`, else `/`.
 A closed gate or an unknown user exits with code `1`.
 
+Other logins and hosts:
+
+```bash
+php artisan dev-login:url admin@demo.test --login=staff      # a login from the logins config
+php artisan dev-login:url 12 --host=acme.example.test         # a domain with parameters ({tenant}.example.test)
+php artisan dev-login:url 12 --tenant=acme                    # runs the login's tenant hook, then looks the user up there
+```
+
 ### 3. Configure (`config/dev-login.php`)
 
 - `allowed_ips`: IPs/CIDR ranges for a shared dev box (others get `404`).
 - `guard`: the session guard to sign in on (null = default). `user_key`: `id` or e.g. `email`.
 - `redirect`: route name or path. `middleware`, `path`, `route_name`, `domain`.
+- `logins`: more logins by name (`'staff' => ['guard' => 'staff', 'domain' => 'admin.example.test']`),
+  each with its own route (`dev.login.<name>`). They do not inherit the top-level keys; a missing key
+  gets the package default. `enabled`, `block_in_production`, `reject_cross_site` and `allowed_ips`
+  are global; a login can only narrow them. `default` is the top-level login's name and is taken.
+- Tenants: put the tenant-picking middleware before the lookup (global, or in the login's
+  `middleware`). `tenant`: an invokable `__invoke(string $tenant): string` that switches to the
+  tenant and returns its base URL, used by `dev-login:url --tenant`.
 - `authorize`: the class name of a plain invokable (no package interface, so the class
   loads without the package in production):
 
@@ -80,11 +95,11 @@ final class AuthorizeActiveUser
 - The sign-in runs with `Context::get('dev_login') === true`: read it in a `Login` listener.
 - Refusals: `Event::listen(\NETipar\DevLogin\Events\DevLoginRefused::class, …)` is safe even when the package is
   not installed: `use` plus `::class` is only a string and never loads the class. The event carries `$user`, `$guard`,
-  `?$message`; `DevLoginSucceeded` carries `$user`, `$guard`. Event discovery and `event:cache` only store the class name.
+  `?$message`, `$login`; `DevLoginSucceeded` carries `$user`, `$guard`, `$login`. Event discovery and `event:cache` only store the class name.
 
 ### 5. Check
 
-`php artisan about` shows a "Dev Login" section (enabled, blocked, route, guard, allowed IPs).
+`php artisan about` shows a "Dev Login" section (enabled, blocked, route, guard, allowed IPs, and a row per extra login).
 
 ## References
 
