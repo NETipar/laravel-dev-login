@@ -39,6 +39,15 @@ abstract class TestCase extends Orchestra
         $this->defineDatabaseMigrations();
     }
 
+    /**
+     * @param  array<string, array<string, mixed>>  $logins
+     * @param  array<string, mixed>  $config
+     */
+    protected function bootLogins(array $logins, array $config = []): void
+    {
+        $this->reboot(['dev-login.enabled' => true, 'dev-login.logins' => $logins, ...$config]);
+    }
+
     protected function tearDown(): void
     {
         self::$bootConfig = ['dev-login.enabled' => true];
@@ -69,6 +78,8 @@ abstract class TestCase extends Orchestra
             'auth.providers.users.model' => User::class,
             'auth.providers.accounts' => ['driver' => 'eloquent', 'model' => UuidAccount::class],
             'auth.guards.accounts' => ['driver' => 'session', 'provider' => 'accounts'],
+            'auth.guards.staff' => ['driver' => 'session', 'provider' => 'users'],
+            'database.connections.tenant' => ['driver' => 'sqlite', 'database' => ':memory:', 'prefix' => '', 'foreign_key_constraints' => true],
             'auth.guards.api' => ['driver' => 'token', 'provider' => 'users'],
             ...self::$bootConfig,
         ]);
@@ -97,6 +108,23 @@ abstract class TestCase extends Orchestra
             $table->string('name');
             $table->string('email')->unique();
             $table->string('password');
+            $table->rememberToken();
+            $table->timestamps();
+        });
+    }
+
+    /**
+     * A second in-memory database with its own users table, for the request-time provider switch.
+     */
+    protected function createTenantDatabase(): void
+    {
+        Schema::connection('tenant')->create('users', function (Blueprint $table): void {
+            $table->id();
+            $table->string('name');
+            $table->string('email')->unique();
+            $table->timestamp('email_verified_at')->nullable();
+            $table->string('password');
+            $table->boolean('active')->default(true);
             $table->rememberToken();
             $table->timestamps();
         });

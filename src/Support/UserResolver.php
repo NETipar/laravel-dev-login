@@ -13,16 +13,14 @@ use Stringable;
 
 /**
  * Finds the user through the guard's own user provider.
+ *
+ * @internal
  */
 final class UserResolver
 {
-    public function guardName(): string
+    public function guardName(LoginProfile $profile): string
     {
-        $configured = config('dev-login.guard');
-
-        return is_string($configured) && $configured !== ''
-            ? $configured
-            : config()->string('auth.defaults.guard');
+        return $profile->guard ?? config()->string('auth.defaults.guard');
     }
 
     public function guard(string $name): SessionGuard
@@ -31,16 +29,16 @@ final class UserResolver
 
         if (! $guard instanceof SessionGuard) {
             throw new InvalidArgumentException(
-                "Dev login needs a stateful (session) guard, but the guard [{$name}] is not one. Set dev-login.guard to a session guard.",
+                "Dev login needs a stateful (session) guard, but the guard [{$name}] is not one. Set the guard of the dev login profile to a session guard.",
             );
         }
 
         return $guard;
     }
 
-    public function find(SessionGuard $guard, string $value): ?Authenticatable
+    public function find(LoginProfile $profile, SessionGuard $guard, string $value): ?Authenticatable
     {
-        $key = config()->string('dev-login.user_key');
+        $key = $profile->userKey;
         $provider = $guard->getProvider();
 
         if ($key !== 'id') {
@@ -61,11 +59,11 @@ final class UserResolver
     }
 
     /**
-     * The value that goes into the URL for this user, per the configured user_key.
+     * The value that goes into the URL for this user, per the profile's user_key.
      */
-    public function urlValue(Authenticatable $user): string
+    public function urlValue(LoginProfile $profile, Authenticatable $user): string
     {
-        $key = config()->string('dev-login.user_key');
+        $key = $profile->userKey;
 
         $value = $key === 'id' ? $user->getAuthIdentifier() : data_get($user, $key);
 

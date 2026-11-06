@@ -15,6 +15,7 @@ This repository is a Laravel package. Keep the package focused, idiomatic, and e
 - The package is a full authentication bypass for development. Every change to the gate (`DevLogin::gateOpen()`), the controller's refusal order or the redirect resolution is security-relevant and needs a test for the refused case.
 - One switch opens the route: `dev-login.enabled` (`DEV_LOGIN_ENABLED`, default `false`). `APP_ENV` may only narrow it (`block_in_production`), never open it. While the gate is closed the route is not registered at all; the controller re-checks the gate for a stale route cache.
 - Consumers install it with `composer require --dev`. Nothing in the consuming app's runtime code may need a package class: hooks are class-name strings in `config/dev-login.php` (plain invokables, no package interface), and the "this was a dev login" marker travels in Laravel's `Context` (`dev_login`). Do not add a static boot-time registration API.
+- The top-level keys are the `default` login; `logins` adds named ones. A login never inherits the top-level values, and `enabled`, `block_in_production`, `reject_cross_site` and `allowed_ips` are global: a login may only narrow them. Guards and providers are resolved per request, never at boot.
 - Users are resolved through the guard's user provider (`retrieveById()` / `retrieveByCredentials()`), never through route model binding.
 - Config key and publish tag use the `dev-login` slug (`config/dev-login.php`, `dev-login-config`), not the `laravel-dev-login` composer slug.
 

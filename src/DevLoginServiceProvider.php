@@ -8,7 +8,10 @@ use Illuminate\Foundation\Console\AboutCommand;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
 use NETipar\DevLogin\Console\DevLoginUrlCommand;
+use NETipar\DevLogin\Http\Controllers\DevLoginController;
 use NETipar\DevLogin\Http\Middleware\AddResponseHeaders;
+use NETipar\DevLogin\Support\LoginProfile;
+use NETipar\DevLogin\Support\LoginProfiles;
 
 final class DevLoginServiceProvider extends ServiceProvider
 {
@@ -29,29 +32,31 @@ final class DevLoginServiceProvider extends ServiceProvider
 
         AboutCommand::add('Dev Login', fn (): array => $this->aboutData());
 
-        if (DevLogin::gateOpen()) {
-            $this->registerRoute();
+        if (DevLogin::gateOpen() && ! $this->app->routesAreCached()) {
+            $this->registerRoutes(new LoginProfiles);
         }
     }
 
-    private function registerRoute(): void
+    /**
+     * One route per open profile. The route carries the profile name for the controller.
+     */
+    private function registerRoutes(LoginProfiles $profiles): void
     {
-        $middleware = array_values(array_filter(
-            config()->array('dev-login.middleware', []),
-            is_string(...),
-        ));
+        foreach ($profiles->open() as $profile) {
+            $attributes = ['middleware' => [AddResponseHeaders::class, ...$profile->middleware]];
 
-        $attributes = ['middleware' => [AddResponseHeaders::class, ...$middleware]];
+            if ($profile->domain !== null) {
+                $attributes['domain'] = $profile->domain;
+            }
 
-        $domain = config('dev-login.domain');
-
-        if (is_string($domain) && $domain !== '') {
-            $attributes['domain'] = $domain;
+            Route::group($attributes, function () use ($profile): void {
+                Route::get($profile->path, [
+                    'uses' => DevLoginController::class,
+                    'as' => $profile->routeName,
+                    'dev_login' => $profile->name,
+                ]);
+            });
         }
-
-        Route::group($attributes, function (): void {
-            $this->loadRoutesFrom(__DIR__.'/../routes/dev-login.php');
-        });
     }
 
     /**
@@ -59,15 +64,34 @@ final class DevLoginServiceProvider extends ServiceProvider
      */
     private function aboutData(): array
     {
-        $guard = config('dev-login.guard');
-        $ips = array_values(array_filter(config()->array('dev-login.allowed_ips', []), is_string(...)));
+        $profiles = new LoginProfiles;
+        $default = $profiles->default();
+        $ips = $profiles->globalAllowedIps();
 
-        return [
+        $rows = [
             'Enabled' => config()->boolean('dev-login.enabled', false) ? 'yes' : 'no',
             'Blocked (production)' => DevLogin::blockedInProduction() ? 'yes' : 'no',
-            'Route' => DevLogin::gateOpen() ? '/'.ltrim(config()->string('dev-login.path'), '/') : 'not registered',
-            'Guard' => is_string($guard) && $guard !== '' ? $guard : 'default ('.config()->string('auth.defaults.guard').')',
+            'Route' => DevLogin::gateOpen() ? ($default->domain ?? '').'/'.ltrim($default->path, '/') : 'not registered',
+            'Guard' => $this->guardLabel($default),
             'Allowed IPs' => $ips === [] ? 'any' : implode(', ', $ips),
         ];
+
+        foreach ($profiles->all() as $name => $profile) {
+            if (! $profile->isDefault()) {
+                $rows['Login ('.$name.')'] = implode(' | ', [
+                    $profile->state(),
+                    'guard '.$this->guardLabel($profile),
+                    $profile->domain ?? 'any host',
+                    '/'.ltrim($profile->path, '/'),
+                ]);
+            }
+        }
+
+        return $rows;
+    }
+
+    private function guardLabel(LoginProfile $profile): string
+    {
+        return $profile->guard ?? 'default ('.config()->string('auth.defaults.guard').')';
     }
 }

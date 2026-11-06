@@ -7,31 +7,32 @@ namespace NETipar\DevLogin\Support;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
+/**
+ * @internal
+ */
 final class RedirectTarget
 {
     /**
      * ?to= (only a same-host relative path), else the redirect config (route name or path), else fortify.home or '/'.
      */
-    public function resolve(Request $request): string
+    public function resolve(Request $request, LoginProfile $profile): string
     {
-        $parameter = config('dev-login.redirect_parameter');
-
-        if (is_string($parameter) && $parameter !== '') {
-            $to = $request->query($parameter);
+        if ($profile->redirectParameter !== null) {
+            $to = $request->query($profile->redirectParameter);
 
             if (is_string($to) && $this->isSafeRelativePath($to)) {
                 return $to;
             }
         }
 
-        return $this->default();
+        return $this->default($profile);
     }
 
-    public function default(): string
+    public function default(LoginProfile $profile): string
     {
-        $configured = config('dev-login.redirect');
+        $configured = $profile->redirect;
 
-        if (is_string($configured) && $configured !== '') {
+        if ($configured !== null) {
             return Route::has($configured) ? route($configured) : $configured;
         }
 

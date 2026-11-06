@@ -14,6 +14,8 @@ use Illuminate\Support\Facades\Context;
 use NETipar\DevLogin\DevLogin;
 use NETipar\DevLogin\Events\DevLoginRefused;
 use NETipar\DevLogin\Events\DevLoginSucceeded;
+use NETipar\DevLogin\Support\LoginProfile;
+use NETipar\DevLogin\Support\LoginProfiles;
 use NETipar\DevLogin\Support\RedirectTarget;
 use NETipar\DevLogin\Support\UserResolver;
 use Symfony\Component\HttpFoundation\IpUtils;
@@ -26,32 +28,36 @@ final class DevLoginController
      */
     public function __invoke(
         Request $request,
+        LoginProfiles $profiles,
         UserResolver $users,
         RedirectTarget $redirects,
         Dispatcher $events,
     ): Response|RedirectResponse {
-        // defense in depth: a stale route cache can keep the route alive while the gate is closed
-        abort_unless(DevLogin::gateOpen(), 404);
+        $profile = $this->profile($request, $profiles);
 
-        $this->abortUnlessIpAllowed($request);
+        // defense in depth: a stale route cache can keep the route alive while the profile is closed
+        abort_unless($profile->open(), 404);
+
+        $this->abortUnlessIpAllowed($request, $profiles, $profile);
 
         if ($this->isPrefetch($request)) {
             return response()->noContent();
         }
 
-        if (config()->boolean('dev-login.reject_cross_site', true) && $request->headers->get('Sec-Fetch-Site') === 'cross-site') {
+        if ($profile->rejectCrossSite && $request->headers->get('Sec-Fetch-Site') === 'cross-site') {
             abort(403, 'A dev login cannot be started from another site.');
         }
 
-        $guardName = $users->guardName();
+        // guard and provider are looked up only now: a tenant middleware may have swapped them
+        $guardName = $users->guardName($profile);
         $guard = $users->guard($guardName);
 
-        $authenticatable = $users->find($guard, $this->rawUser($request)) ?? abort(404);
+        $authenticatable = $users->find($profile, $guard, $this->rawUser($request)) ?? abort(404);
 
-        $verdict = $this->authorize($authenticatable, $request);
+        $verdict = $this->authorize($profile, $authenticatable, $request);
 
         if ($verdict->denied()) {
-            $events->dispatch(new DevLoginRefused($authenticatable, $guardName, $verdict->message()));
+            $events->dispatch(new DevLoginRefused($authenticatable, $guardName, $verdict->message(), $profile->name));
 
             $status = $verdict->status() ?? 403;
 
@@ -71,9 +77,19 @@ final class DevLoginController
         $guard->login($authenticatable);
         $request->session()->regenerate();
 
-        $events->dispatch(new DevLoginSucceeded($authenticatable, $guardName));
+        $events->dispatch(new DevLoginSucceeded($authenticatable, $guardName, $profile->name));
 
-        return redirect()->to($redirects->resolve($request));
+        return redirect()->to($redirects->resolve($request, $profile));
+    }
+
+    /**
+     * The profile the route was registered for; a profile that is gone from config answers 404.
+     */
+    private function profile(Request $request, LoginProfiles $profiles): LoginProfile
+    {
+        $name = $request->route()?->getAction('dev_login');
+
+        return is_string($name) ? ($profiles->find($name) ?? abort(404)) : abort(404);
     }
 
     /**
@@ -86,18 +102,16 @@ final class DevLoginController
         return is_string($raw) ? $raw : abort(404);
     }
 
-    private function abortUnlessIpAllowed(Request $request): void
+    /**
+     * The global list and the profile's own list must both let the IP through.
+     */
+    private function abortUnlessIpAllowed(Request $request, LoginProfiles $profiles, LoginProfile $profile): void
     {
-        $allowed = array_values(array_filter(
-            config()->array('dev-login.allowed_ips', []),
-            is_string(...),
-        ));
-
-        if ($allowed === []) {
-            return;
+        foreach ([$profiles->globalAllowedIps(), $profile->allowedIps] as $allowed) {
+            if ($allowed !== []) {
+                abort_unless(IpUtils::checkIp((string) $request->ip(), $allowed), 404);
+            }
         }
-
-        abort_unless(IpUtils::checkIp((string) $request->ip(), $allowed), 404);
     }
 
     private function isPrefetch(Request $request): bool
@@ -109,18 +123,18 @@ final class DevLoginController
     /**
      * Fail closed: only true or an allowing Response lets the user in.
      */
-    private function authorize(Authenticatable $user, Request $request): AccessResponse
+    private function authorize(LoginProfile $profile, Authenticatable $user, Request $request): AccessResponse
     {
-        $class = config('dev-login.authorize');
+        $class = $profile->authorize;
 
-        if (! is_string($class) || $class === '') {
+        if ($class === null) {
             return AccessResponse::allow();
         }
 
         $hook = app($class);
 
         if (! is_callable($hook)) {
-            throw new UnexpectedValueException("The dev-login.authorize class [{$class}] must be invokable.");
+            throw new UnexpectedValueException("The dev login authorize class [{$class}] must be invokable.");
         }
 
         $result = $hook($user, $request);

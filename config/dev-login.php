@@ -42,4 +42,27 @@ return [
 
     // Query parameter for a one-off target (?to=/servers/12); only same-host relative paths. null = off.
     'redirect_parameter' => 'to',
+
+    // Multi-tenant apps: the invokable class that dev-login:url --tenant=<value> runs.
+    // __invoke(string $tenant): string — it switches to that tenant and returns its base URL
+    // (scheme + host, e.g. https://acme.example.test). null = --tenant is not available.
+    'tenant' => null,
+
+    // More logins by name, each with its own route (dev.login.<name>); "default" is the one above.
+    // A login does not inherit the keys above: what it leaves out gets the package default.
+    // enabled, block_in_production, reject_cross_site and allowed_ips stay global; a login can only narrow them.
+    // See "Multiple guards and hosts" and "Multi-tenant apps" in the README.
+    //
+    // 'logins' => [
+    //     'tenant' => [
+    //         'domain' => '{tenant}.example.test',
+    //         'tenant' => App\Tenancy\ActivateTenant::class,
+    //     ],
+    //     'admin' => [
+    //         'domain' => 'admin.example.test',
+    //         'guard' => 'admin',
+    //         'user_key' => 'email',
+    //     ],
+    // ],
+    'logins' => [],
 ];
