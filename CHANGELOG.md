@@ -1,8 +1,8 @@
 # Release Notes
 
-## [Unreleased](https://github.com/NETipar/laravel-dev-login/commits/main/compare/v0.1.0...HEAD)
+## [Unreleased](https://github.com/NETipar/laravel-dev-login/compare/v0.1.0...HEAD)
 
-## [v0.1.0](https://github.com/NETipar/laravel-dev-login/commits/main/compare/main...v0.1.0) - 2026-11-06
+## [v0.1.0](https://github.com/NETipar/laravel-dev-login/commits/v0.1.0) - 2026-11-06
 
 First release.
 
